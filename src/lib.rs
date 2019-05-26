@@ -1,217 +1,190 @@
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Object {
-    Note(NoteData),
-    LongNote(NoteData),
-    Obstacle(ObstacleData),
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::io::{self, prelude::*};
+use serde::{Serialize, Deserialize};
+
+mod helper;
+pub use helper::*;
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash, Serialize, Deserialize)]
+pub struct Pointer {
+    #[serde(rename = "FileID")]
+    pub file: i32,
+    #[serde(rename = "PathID")]
+    pub path: i64,
 }
 
-impl Object {
-    pub fn index(&self) -> i32 {
-        match self {
-            Object::Note(note) => note.index,
-            Object::LongNote(note) => note.index,
-            Object::Obstacle(obs) => obs.index,
+impl Pointer {
+    pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_i32::<LittleEndian>(self.file)?;
+        writer.write_i64::<LittleEndian>(self.path)?;
+        Ok(())
+    }
+
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let file = reader.read_i32::<LittleEndian>()?;
+        let path = reader.read_i64::<LittleEndian>()?;
+
+        Ok(Self { file, path, })
+    }
+}
+
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub struct Difficulty {
+    #[serde(rename = "_difficulty")]
+    pub difficulty: i32,
+    #[serde(rename = "_difficultyRank")]
+    pub rank: i32,
+    #[serde(rename = "_noteJumpMovementSpeed")]
+    pub note_jump: f32,
+    #[serde(rename = "_noteJumpStartBeatOffset")]
+    pub note_jump_offset: i32,
+    #[serde(rename = "_beatmapData")]
+    pub beatmap: Pointer,
+}
+
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub struct Difficulties {
+    #[serde(rename = "Array")]
+    pub vec: Vec<Difficulty>,
+    pub size: u32,
+}
+
+impl Difficulties {
+    pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_u32::<LittleEndian>(self.size)?;
+
+        for difficulty in &self.vec {
+            difficulty.write(writer)?;
         }
+
+        Ok(())
     }
 
-    pub fn set_index(&mut self, index: i32) {
-        match self {
-            Object::Note(note) => note.index = index,
-            Object::LongNote(note) => note.index = index,
-            Object::Obstacle(obs) => obs.index = index,
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let mut vec = Vec::new();
+        let size = reader.read_u32::<LittleEndian>()?;
+
+        for _ in 0..size {
+            vec.push(Difficulty::read(reader)?);
         }
-    }
-    
-    pub fn id(&self) -> i32 {
-        match self {
-            Object::Note(note) => note.id,
-            Object::LongNote(note) => note.id,
-            Object::Obstacle(obs) => obs.id,
-        }
-    }
 
-    pub fn set_id(&mut self, id: i32) {
-        match self {
-            Object::Note(note) => note.id = id,
-            Object::LongNote(note) => note.id = id,
-            Object::Obstacle(obs) => obs.id = id,
-        }
-    }
-
-    pub fn time(&self) -> f32 {
-        match self {
-            Object::Note(note) => note.time,
-            Object::LongNote(note) => note.time,
-            Object::Obstacle(obs) => obs.time,
-        }
-    }
-
-    pub fn set_time(&mut self, time: f32) {
-        match self {
-            Object::Note(note) => note.time = time,
-            Object::LongNote(note) => note.time = time,
-            Object::Obstacle(obs) => obs.time = time,
-        }
-    }
-
-    pub fn mirrored(&self, count: i32) -> Self {
-        let mut new = self.clone();
-        new.set_index(count - 1 - self.index());
-        new
+        Ok(Self { vec, size, })
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum NoteDirection {
-    Up,
-    Down,
-    Left,
-    Right,
-    UpLeft,
-    UpRight,
-    DownLeft,
-    DownRight,
-    Any,
-    None,
-}
+impl Difficulty {
+    pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_i32::<LittleEndian>(self.difficulty)?;
+        writer.write_i32::<LittleEndian>(self.rank)?;
+        writer.write_f32::<LittleEndian>(self.note_jump)?;
+        writer.write_i32::<LittleEndian>(self.note_jump_offset)?;
+        self.beatmap.write(writer)?;
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NoteLayer {
-    Base,
-    Upper,
-    Top,
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum NoteType {
-    NoteA,
-    NoteB,
-    GhostNote,
-    Bomb,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NoteData {
-    pub typ: NoteType,
-    pub time: f32,
-    pub index: i32,
-    pub id: i32,
-    pub dir: NoteDirection,
-    pub layer: NoteLayer,
-    pub start_layer: NoteLayer,
-    pub flip_index: i32,
-    pub flip_y: f32,
-    pub time_to_next: f32,
-    pub time_to_prev: f32,
-}
-
-impl NoteData {
-    pub fn set_flip_to(&mut self, target: &NoteData) {
-        self.flip_index = target.flip_index;
-        self.flip_y = if self.index > target.index { 1f32 } else { -1f32 };
-        if (self.index > target.index && self.layer < target.layer) || 
-           (self.index < target.index && self.layer > target.layer) {
-            self.flip_y *= -1f32;
-        }
+        Ok(())
     }
 
-    pub fn switch(&mut self) {
-        self.typ = match self.typ {
-            NoteType::NoteA => NoteType::NoteB,
-            NoteType::NoteB => NoteType::NoteA,
-            typ => typ,
-        };
-    }
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let difficulty = reader.read_i32::<LittleEndian>()?;
+        let rank = reader.read_i32::<LittleEndian>()?;
+        let note_jump = reader.read_f32::<LittleEndian>()?;
+        let note_jump_offset = reader.read_i32::<LittleEndian>()?;
+        let beatmap = Pointer::read(reader)?;
 
-    pub fn mirror(&mut self) {
-        use NoteDirection::*;
-
-        self.dir = match self.dir {
-            Left => Right,
-            Right => Left,
-            UpLeft => UpRight,
-            UpRight => UpLeft,
-            DownLeft => DownRight,
-            DownRight => DownLeft,
-            dir => dir,
-        };
-    }
-
-    pub fn mirror_index(&mut self, count: i32) {
-        self.index = count - 1 - self.index;
-        self.flip_index = count - 1 - self.flip_index;
+        Ok(Self { difficulty, rank, note_jump, note_jump_offset, beatmap, })
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum ObstacleType {
-    FullHeight,
-    Top,
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub struct Beatmap {
+    #[serde(rename = "GameObject")]
+    pub game_obj: Pointer,
+    #[serde(rename = "Enabled")]
+    pub enabled: u32,
+    #[serde(rename = "MonoScript")]
+    pub script: Pointer,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "_levelID")]
+    pub id: String,
+    #[serde(rename = "_songName")]
+    pub song_name: String,
+    #[serde(rename = "_songSubName")]
+    pub song_sub_name: String,
+    #[serde(rename = "_songAuthorName")]
+    pub song_author_name: String,
+    #[serde(rename = "_levelAuthorName")]
+    pub author: String,
+    #[serde(rename = "_audioClip")]
+    pub audio_clip: Pointer,
+    #[serde(rename = "_beatsPerMinute")]
+    pub bpm: f32,
+    #[serde(rename = "_songTimeOffset")]
+    pub time_offset: f32,
+    #[serde(rename = "_shuffle")]
+    pub shuffle: f32,
+    #[serde(rename = "_shufflePeriod")]
+    pub shuffle_period: f32,
+    #[serde(rename = "_previewStartTime")]
+    pub preview_start: f32,
+    #[serde(rename = "_previewDuration")]
+    pub preview_len: f32,
+    #[serde(rename = "_coverImageTexture2D")]
+    pub cover: Pointer,
+    #[serde(rename = "_environmentSceneInfo")]
+    pub environment: Pointer,
+    #[serde(rename = "_difficultyBeatmapSets")]
+    pub difficulties: Difficulties,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ObstacleData {
-    pub time: f32,
-    pub index: i32,
-    pub id: i32,
-    pub typ: ObstacleType,
-    pub dur: f32,
-    pub width: i32,
-}
-
-impl ObstacleData {
-    pub fn mirror(&mut self, count: i32) {
-        self.index = count - self.width - self.index;
+impl Beatmap {
+    pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
+        self.game_obj.write(writer)?;
+        writer.write_u32::<LittleEndian>(self.enabled)?;
+        self.script.write(writer)?;
+        write_aligned_str(writer, &self.name)?;
+        write_aligned_str(writer, &self.id)?;
+        write_aligned_str(writer, &self.song_name)?;
+        write_aligned_str(writer, &self.song_sub_name)?;
+        write_aligned_str(writer, &self.song_author_name)?;
+        write_aligned_str(writer, &self.author)?;
+        self.audio_clip.write(writer)?;
+        writer.write_f32::<LittleEndian>(self.bpm)?;
+        writer.write_f32::<LittleEndian>(self.time_offset)?;
+        writer.write_f32::<LittleEndian>(self.shuffle)?;
+        writer.write_f32::<LittleEndian>(self.shuffle_period)?;
+        writer.write_f32::<LittleEndian>(self.preview_start)?;
+        writer.write_f32::<LittleEndian>(self.preview_len)?;
+        self.cover.write(writer)?;
+        self.environment.write(writer)?;
+        self.difficulties.write(writer)?;
+        Ok(())
     }
-}
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-#[repr(i32)]
-pub enum EventType {
-    Event0,
-    Event1,
-    Event2,
-    Event3,
-    Event4,
-    Event5,
-    Event6,
-    Event7,
-    Event8,
-    Event9,
-    Event10,
-    Event11,
-    Event12,
-    Event13,
-    Event14,
-    Event15,
-    VoidEvent = -1,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EventData {
-    pub typ: EventType,
-    pub time: f32,
-    pub val: i32,
-}
-
-pub fn bpm_time_to_real(mut num: f32, bpm: f32, shuffle: f32, shuffle_period: f32) -> f32 {
-    if shuffle_period > 0f32 && ((num * (1f32 / shuffle_period)).trunc() as i32) % 2 == 1 {
-        num += shuffle * shuffle_period;
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let game_obj = Pointer::read(reader)?;
+        let enabled = reader.read_u32::<LittleEndian>()?;
+        let script = Pointer::read(reader)?;
+        let name = read_aligned_str(reader)?;
+        let id = read_aligned_str(reader)?;
+        let song_name = read_aligned_str(reader)?;
+        let song_sub_name = read_aligned_str(reader)?;
+        let song_author_name = read_aligned_str(reader)?;
+        let author = read_aligned_str(reader)?;
+        let audio_clip = Pointer::read(reader)?;
+        let bpm = reader.read_f32::<LittleEndian>()?;
+        let time_offset = reader.read_f32::<LittleEndian>()?;
+        let shuffle = reader.read_f32::<LittleEndian>()?;
+        let shuffle_period = reader.read_f32::<LittleEndian>()?;
+        let preview_start = reader.read_f32::<LittleEndian>()?;
+        let preview_len = reader.read_f32::<LittleEndian>()?;
+        let cover = Pointer::read(reader)?;
+        let environment = Pointer::read(reader)?;
+        let difficulties = Difficulties::read(reader)?;
+        Ok(Self { game_obj, enabled, script, name, id, song_name, song_sub_name, song_author_name, author, audio_clip, bpm, time_offset, shuffle, shuffle_period, preview_start, preview_len, cover, environment, difficulties, })
     }
-
-    if bpm > 0f32 {
-        num = (num / bpm) * 60f32;
-    }
-
-    num
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bpm_time() {
-        assert_eq!(bpm_time_to_real(10f32, 60f32, 1f32, 2f32), 12f32); // arbitrary values compared with c#
-    }
 }
